@@ -66,21 +66,13 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
 
-      - name: Resolve full feature set (armv7-safe)
+      - name: Resolve feature set
         id: features
         shell: bash
         run: |
-          ALL_FEATURES="$(cargo run --quiet -p xtask --bin generate -- features --selection all)"
-          echo "All features: $ALL_FEATURES"
-          FILTERED="$(printf '%s' "$ALL_FEATURES" | tr ',' '\n' \
-            | grep -vx 'observability-prometheus' \
-            | grep -vx 'plugins-wasm-cranelift' \
-            | grep -vx 'plugins-wasm-pulley' \
-            | grep -vx 'sandbox-landlock' \
-            | grep -vx 'sandbox-bubblewrap' \
-            | sort -u | paste -sd,)"
-          echo "Filtered features: $FILTERED"
-          echo "features=$FILTERED" >> "$GITHUB_OUTPUT"
+          FEATURES="agent-runtime,acp-bridge,gateway,schema-export,embedded-web,hardware,channel-telegram,channel-discord,channel-email,channel-webhook,channel-acp-server,channel-filesystem,channel-lark,channel-feishu,channel-dingtalk,channel-qq,channel-wechat,channel-wecom,channel-wecom-ws,channel-mochat,channel-clawdtalk,channel-irc,channel-nextcloud"
+          echo "Features: $FEATURES"
+          echo "features=$FEATURES" >> "$GITHUB_OUTPUT"
 
       - name: Build zeroclaw (release, armv7)
         shell: bash
