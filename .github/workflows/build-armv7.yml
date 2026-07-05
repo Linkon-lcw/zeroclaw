@@ -75,7 +75,9 @@ jobs:
           FILTERED="$(printf '%s' "$ALL_FEATURES" | tr ',' '\n' \
             | grep -vx 'observability-prometheus' \
             | grep -vx 'plugins-wasm-cranelift' \
-            | (cat && echo 'plugins-wasm-pulley') \
+            | grep -vx 'plugins-wasm-pulley' \
+            | grep -vx 'sandbox-landlock' \
+            | grep -vx 'sandbox-bubblewrap' \
             | sort -u | paste -sd,)"
           echo "Filtered features: $FILTERED"
           echo "features=$FILTERED" >> "$GITHUB_OUTPUT"
