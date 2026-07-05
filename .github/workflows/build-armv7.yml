@@ -1,0 +1,173 @@
+name: Build ARMv7 (Full Features)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'src/**'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  web:
+    name: Build Web Dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build web dashboard
+        run: cargo web build
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web-dist
+          path: web/dist/
+          retention-days: 7
+
+  build:
+    name: Build zeroclaw (armv7-unknown-linux-gnueabihf)
+    needs: [web]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: 1.93.0
+          targets: armv7-unknown-linux-gnueabihf
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: ubuntu-armv7
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: web-dist
+          path: web/dist/
+
+      - name: Install ARMv7 cross compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+
+      - name: Resolve full feature set (armv7-safe)
+        id: features
+        shell: bash
+        run: |
+          # Start from --selection all (every selectable feature minus
+          # non_row/alias/container_excluded), then drop armv7-incompatible
+          # features:
+          #
+          #   observability-prometheus — backtrace unwind segfaults on ARMv7
+          #   plugins-wasm-cranelift   — Cranelift JIT not supported on ARM32
+          #   voice-wake               — already excluded by container_excluded
+          #   browser-native           — heavyweight native browser automation
+          #   hardware                 — heavyweight native USB/hardware deps
+          #   rag-pdf                  — heavyweight ML/PDF deps
+          #   sandbox-landlock         — requires Landlock LSM (kernel ≥5.13)
+          #   sandbox-bubblewrap       — requires bubblewrap at runtime
+          #
+          ALL_FEATURES="$(cargo run --quiet -p xtask --bin generate -- features --selection all)"
+          echo "All features: $ALL_FEATURES"
+
+          # Filter out armv7-incompatible features, then add back
+          # plugins-wasm-pulley (replaces cranelift JIT which doesn't
+          # support ARM32).
+          FILTERED="$(printf '%s' "$ALL_FEATURES" | tr ',' '\n' \
+            | grep -vx 'observability-prometheus' \
+            | grep -vx 'plugins-wasm-cranelift' \
+            | (cat && echo 'plugins-wasm-pulley') \
+            | sort -u | paste -sd,)"
+          echo "Filtered features: $FILTERED"
+          echo "features=$FILTERED" >> "$GITHUB_OUTPUT"
+
+      - name: Build zeroclaw (release, armv7)
+        shell: bash
+        run: |
+          export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc
+          cargo build \
+            --release \
+            --locked \
+            --no-default-features \
+            --features "${{ steps.features.outputs.features }}" \
+            --target armv7-unknown-linux-gnueabihf \
+            -p zeroclawlabs
+
+      - name: Build zerocode (release, armv7)
+        shell: bash
+        run: |
+          export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc
+          cargo build \
+            --release \
+            --locked \
+            --target armv7-unknown-linux-gnueabihf \
+            -p zerocode
+
+      - name: Check binary sizes
+        shell: bash
+        run: |
+          echo "=== Binary sizes ==="
+          ls -lh target/armv7-unknown-linux-gnueabihf/release/zeroclaw
+          ls -lh target/armv7-unknown-linux-gnueabihf/release/zerocode
+
+      - name: Strip binaries
+        shell: bash
+        run: |
+          arm-linux-gnueabihf-strip target/armv7-unknown-linux-gnueabihf/release/zeroclaw
+          arm-linux-gnueabihf-strip target/armv7-unknown-linux-gnueabihf/release/zerocode
+          echo "=== After strip ==="
+          ls -lh target/armv7-unknown-linux-gnueabihf/release/zeroclaw
+          ls -lh target/armv7-unknown-linux-gnueabihf/release/zerocode
+
+      - name: Package release archive
+        shell: bash
+        run: |
+          mkdir -p staging/web
+          cp target/armv7-unknown-linux-gnueabihf/release/zeroclaw staging/
+          cp target/armv7-unknown-linux-gnueabihf/release/zerocode staging/
+          cp -r web/dist staging/web/dist
+          cd staging
+          tar czf ../zeroclaw-armv7-unknown-linux-gnueabihf.tar.gz zeroclaw zerocode web/dist
+          cd ..
+          echo "=== Archive ==="
+          ls -lh zeroclaw-armv7-unknown-linux-gnueabihf.tar.gz
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zeroclaw-armv7-unknown-linux-gnueabihf
+          path: zeroclaw-armv7-unknown-linux-gnueabihf.tar.gz
+          retention-days: 7
+
+  summary:
+    name: Build Summary
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: zeroclaw-armv7-unknown-linux-gnueabihf
+      - name: Print build summary
+        run: |
+          echo "## ARMv7 Build Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Artifact | Size |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+          ls -lh zeroclaw-armv7-unknown-linux-gnueabihf.tar.gz | awk '{print "| zeroclaw-armv7-unknown-linux-gnueabihf.tar.gz | " $5 " |"}' >> "$GITHUB_STEP_SUMMARY"
